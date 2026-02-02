@@ -1,0 +1,149 @@
+import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
+import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { User } from './entities/user.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Role } from 'src/roles/entities/role.entity';
+
+@Injectable()
+export class UsersService {
+
+  private readonly logger = new Logger(UsersService.name);
+
+  constructor(
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+    @InjectRepository(Role)
+    private roleRepository: Repository<Role>,
+  ) { }
+
+  async create(createUserDto: CreateUserDto) {
+
+    try {
+
+      const user = await this.userRepository.findBy({ email: createUserDto.email });
+
+      if (!user) {
+        this.logger.warn(`Email ${createUserDto.email} already in use`);
+        throw new BadRequestException('Email already in use');
+      }
+
+      const role = await this.roleRepository.findOneBy({ id: createUserDto.roleId });
+
+      if (!role) {
+        this.logger.warn(`Role with id ${createUserDto.roleId} not found`);
+        throw new NotFoundException('Role not found');
+      }
+
+      const userInstance = this.userRepository.create({
+        ...createUserDto,
+        role: role
+      })
+
+      return await this.userRepository.save(userInstance);
+
+    } catch (error) {
+      this.logger.error('Error creating user', error.stack);
+      return new InternalServerErrorException('Error creating user');
+    }
+  }
+
+  async findAll() {
+
+    try {
+
+      return await this.userRepository.find();
+    } catch (error) {
+
+      this.logger.error('Error fetching users', error.stack);
+      throw new InternalServerErrorException('Error fetching users');
+    }
+  }
+
+  async findOne(id: number) {
+
+    try {
+
+      const user = await this.userRepository.findOneBy({ id });
+
+      if (!user) {
+        this.logger.warn(`User with id ${id} not found`);
+        throw new NotFoundException(`User not found`);
+      }
+
+      return user;
+
+    } catch (error) {
+
+      this.logger.error(`Error fetching user with id ${id}`, error.stack);
+      throw new InternalServerErrorException('Error fetching user');
+    }
+  }
+
+  async update(id: number, updateUserDto: UpdateUserDto) {
+
+    try {
+
+      const user = await this.userRepository.findOneBy({ id });
+
+      if (!user) {
+        this.logger.warn(`User with id ${id} not found`);
+        throw new NotFoundException('User not found');
+      }
+
+      if (updateUserDto.email && updateUserDto.email !== user.email) {
+        const existingUser = await this.userRepository.findOneBy({ email: updateUserDto.email });
+
+        if (existingUser && existingUser.id !== id) {
+          this.logger.warn(`Email ${updateUserDto.email} already in use`);
+          throw new BadRequestException('Email already in use');
+        }
+      }
+
+      if (updateUserDto.roleId) {
+        this.logger.warn(`Role updates are not allowed (user id ${id})`);
+        throw new BadRequestException('Updating role is not allowed');
+      }
+
+      const { roleId, ...userData } = updateUserDto;
+
+      const updatedUser = await this.userRepository.save({
+        ...user,
+        ...userData,
+      });
+
+      return updatedUser;
+
+    } catch (error) {
+
+      this.logger.error(`Error updating user with id ${id}`, error.stack);
+      throw new InternalServerErrorException('Error updating user');
+    }
+  }
+
+  async remove(id: number) {
+
+    try {
+
+      const user = await this.userRepository.findOneBy({ id });
+
+      if (!user) {
+        this.logger.warn(`User with id ${id} not found`);
+        throw new NotFoundException(`User with id not found`);
+      }
+
+      user.isActive = false;
+
+      await this.userRepository.save(user);
+      this.logger.log(`User with id ${id} has been deactivated`);
+
+      return { success: true };
+
+    } catch (error) {
+
+      this.logger.error(`Error removing user with id ${id}`, error.stack);
+      throw new InternalServerErrorException('Error removing user');
+    }
+  }
+}
