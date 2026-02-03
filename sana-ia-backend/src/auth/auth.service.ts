@@ -3,14 +3,20 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
-
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { JwtPayload, ValidatedUser } from './interfaces';
+import { LoginResponseDto } from './dto/login-response.dto';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class AuthService {
     private readonly logger = new Logger(AuthService.name);
+
+    // Cache config values to avoid repeated reads
+    private readonly refreshSecret: string;
+    private readonly refreshExpiration: string;
 
     constructor(
         private usersService: UsersService,
@@ -18,9 +24,14 @@ export class AuthService {
         private configService: ConfigService,
         @InjectRepository(RefreshToken)
         private refreshTokenRepository: Repository<RefreshToken>,
-    ) { }
+    ) {
+        this.refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET') || 'default-refresh-secret';
+        this.refreshExpiration = this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d';
+    }
 
-    async validateUser(email: string, password: string): Promise<any> {
+    // ==================== Public Methods ====================
+
+    async validateUser(email: string, password: string): Promise<ValidatedUser | null> {
         const user = await this.usersService.findByEmail(email);
 
         if (!user) {
@@ -44,37 +55,25 @@ export class AuthService {
         return result;
     }
 
-    async login(user: any) {
-        const payload = {
+    async validateLogin(email: string, password: string): Promise<LoginResponseDto> {
+        const user = await this.validateUser(email, password);
+
+        if (!user) {
+            throw new UnauthorizedException('Credenciales inválidas');
+        }
+
+        return this.login(user);
+    }
+
+    async login(user: ValidatedUser): Promise<LoginResponseDto> {
+        const payload: JwtPayload = {
             sub: user.id,
             email: user.email,
             role: user.role?.name || 'user',
         };
 
-        const refreshToken = this.jwtService.sign(payload, {
-            secret: this.configService.get<string>('JWT_REFRESH_SECRET') || 'default-refresh-secret',
-            expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d') as any,
-        });
-
-        // Store refresh token in DB
-        const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
-        const expirationTime = this.configService.get<string>('JWT_REFRESH_EXPIRATION') || '7d';
-
-        // Calculate expiration date
-        const expirationDate = new Date();
-        if (expirationTime.endsWith('d')) {
-            const days = parseInt(expirationTime.replace('d', ''));
-            expirationDate.setDate(expirationDate.getDate() + days);
-        } else if (expirationTime.endsWith('s')) {
-            const seconds = parseInt(expirationTime.replace('s', ''));
-            expirationDate.setSeconds(expirationDate.getSeconds() + seconds);
-        }
-
-        await this.refreshTokenRepository.save({
-            token: hashedRefreshToken,
-            user: { id: user.id } as any,
-            expiresAt: expirationDate,
-        });
+        const refreshToken = this.generateRefreshToken(payload);
+        await this.saveRefreshToken(refreshToken, user.id);
 
         this.logger.log(`User ${user.email} logged in successfully`);
 
@@ -85,115 +84,118 @@ export class AuthService {
                 id: user.id,
                 email: user.email,
                 name: user.name,
-                role: user.role?.name,
+                role: user.role?.name || 'user',
             },
         };
     }
 
-    async validateLogin(email: string, password: string) {
-        const user = await this.validateUser(email, password);
+    async refresh(refreshToken: string): Promise<LoginResponseDto> {
+        const payload = this.verifyRefreshToken(refreshToken);
+        const matchingToken = await this.findAndValidateStoredToken(refreshToken, payload.sub);
 
+        // Refresh Rotation: Revoke used token
+        await this.revokeToken(matchingToken);
+
+        // Fetch user with role and issue new tokens
+        const user = await this.usersService.findOne(payload.sub);
         if (!user) {
-            throw new UnauthorizedException('Credenciales inválidas');
+            throw new UnauthorizedException('Usuario no encontrado');
         }
 
-        return this.login(user);
+        return this.login(user as ValidatedUser);
     }
 
-    async refresh(refreshToken: string) {
+    async logout(refreshToken: string): Promise<void> {
         try {
-            // Validate signature
-            const payload = this.jwtService.verify(refreshToken, {
-                secret: this.configService.get<string>('JWT_REFRESH_SECRET') || 'default-refresh-secret',
-            });
+            const payload = this.jwtService.decode(refreshToken) as JwtPayload | null;
+            if (!payload?.sub) return;
 
-            // Check if user still exists
-            const user = await this.usersService.findOne(payload.sub);
-            if (!user) {
-                throw new UnauthorizedException('Usuario no encontrado');
-            }
+            const tokens = await this.getActiveTokensForUser(payload.sub);
 
-            // Verify if token exists in DB and matches
-            const tokens: RefreshToken[] = await this.refreshTokenRepository.find({
-                where: { user: { id: user.id }, isRevoked: false },
-            });
-
-            let matchingToken: RefreshToken | null = null;
             for (const tokenEntity of tokens) {
-                const isMatch = await bcrypt.compare(refreshToken, tokenEntity.token);
-                if (isMatch) {
-                    matchingToken = tokenEntity;
+                if (await bcrypt.compare(refreshToken, tokenEntity.token)) {
+                    await this.revokeToken(tokenEntity);
                     break;
                 }
             }
+        } catch {
+            // Silently ignore logout errors
+        }
+    }
 
-            if (!matchingToken) {
-                // Potential reuse detected! Revoke all tokens for this user?
-                // For now just deny
-                throw new UnauthorizedException('Token de refresco inválido o revocado');
-            }
+    // ==================== Private Helper Methods ====================
 
-            if (matchingToken.expiresAt < new Date()) {
-                throw new UnauthorizedException('Token de refresco expirado');
-            }
+    private generateRefreshToken(payload: JwtPayload): string {
+        return this.jwtService.sign(payload, {
+            secret: this.refreshSecret,
+            expiresIn: this.refreshExpiration,
+        } as Parameters<typeof this.jwtService.sign>[1]);
+    }
 
-            // Refresh Rotation: Revoke used token, issue new one
-            matchingToken.isRevoked = true;
-            await this.refreshTokenRepository.save(matchingToken);
+    private async saveRefreshToken(token: string, userId: number): Promise<void> {
+        const hashedToken = await bcrypt.hash(token, 10);
+        const expiresAt = this.parseExpirationToDate(this.refreshExpiration);
 
-            // Generate new pair (equivalent to login logic)
-            // But we can simplify to just return new access token + new refresh token
-            // calling login(user) again is easiest way to get full pair
+        await this.refreshTokenRepository.save({
+            token: hashedToken,
+            user: { id: userId } as Partial<User>,
+            expiresAt,
+        });
+    }
 
-            // We need 'role' object for login method
-            const userForLogin = {
-                ...user,
-                role: user.role // assume user has role loaded
-            };
-
-            // To ensure role is loaded, findOne normally fetches eager relations? 
-            // UsersService.findOne doesn't seem to relations currently based on previous views.
-            // Let's assume payload has role info we can reuse or fetch properly.
-
-            // Let's fetch role if missing
-            if (!user.role) {
-                // If service doesn't return role, we might need payload role
-                // For safety, let's call login which re-generates tokens
-                // Re-fetching full user with role would be better but let's trust payload or simple login
-            }
-
-            // Actually, UsersService.findByEmail had relations: ['role'], findOne might not.
-            // Let's fetch the user with role using findByEmail (since we have email from payload)
-            const fullUser = await this.usersService.findByEmail(payload.email);
-            if (!fullUser) throw new UnauthorizedException('User not found');
-
-            return this.login(fullUser);
-
-        } catch (e) {
+    private verifyRefreshToken(token: string): JwtPayload {
+        try {
+            return this.jwtService.verify(token, { secret: this.refreshSecret });
+        } catch {
             throw new UnauthorizedException('Token de refresco inválido');
         }
     }
 
-    async logout(refreshToken: string) {
-        try {
-            // Find matching token and revoke
-            // We need to iterate/compare hashes again or decode to find user first
-            const payload = this.jwtService.decode(refreshToken) as any;
-            if (!payload || !payload.sub) return;
+    private async findAndValidateStoredToken(refreshToken: string, userId: number): Promise<RefreshToken> {
+        const tokens = await this.getActiveTokensForUser(userId);
 
-            const tokens: RefreshToken[] = await this.refreshTokenRepository.find({
-                where: { user: { id: payload.sub }, isRevoked: false },
-            });
-
-            for (const tokenEntity of tokens) {
-                if (await bcrypt.compare(refreshToken, tokenEntity.token)) {
-                    tokenEntity.isRevoked = true;
-                    await this.refreshTokenRepository.save(tokenEntity);
-                    break;
+        for (const tokenEntity of tokens) {
+            const isMatch = await bcrypt.compare(refreshToken, tokenEntity.token);
+            if (isMatch) {
+                if (tokenEntity.expiresAt < new Date()) {
+                    throw new UnauthorizedException('Token de refresco expirado');
                 }
+                return tokenEntity;
             }
-        } catch (e) {
-            // Ignore errors on logout
         }
+
+        // No matching token found - potential reuse attack
+        throw new UnauthorizedException('Token de refresco inválido o revocado');
+    }
+
+    private async getActiveTokensForUser(userId: number): Promise<RefreshToken[]> {
+        return this.refreshTokenRepository.find({
+            where: { user: { id: userId }, isRevoked: false },
+        });
+    }
+
+    private async revokeToken(token: RefreshToken): Promise<void> {
+        token.isRevoked = true;
+        await this.refreshTokenRepository.save(token);
+    }
+
+    private parseExpirationToDate(expiration: string): Date {
+        const date = new Date();
+
+        if (expiration.endsWith('d')) {
+            const days = parseInt(expiration.replace('d', ''), 10);
+            date.setDate(date.getDate() + days);
+        } else if (expiration.endsWith('h')) {
+            const hours = parseInt(expiration.replace('h', ''), 10);
+            date.setHours(date.getHours() + hours);
+        } else if (expiration.endsWith('m')) {
+            const minutes = parseInt(expiration.replace('m', ''), 10);
+            date.setMinutes(date.getMinutes() + minutes);
+        } else if (expiration.endsWith('s')) {
+            const seconds = parseInt(expiration.replace('s', ''), 10);
+            date.setSeconds(date.getSeconds() + seconds);
+        }
+
+        return date;
     }
 }

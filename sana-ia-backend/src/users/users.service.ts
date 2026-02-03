@@ -81,7 +81,10 @@ export class UsersService {
 
     try {
 
-      const user = await this.userRepository.findOneBy({ id });
+      const user = await this.userRepository.findOne({
+        where: { id },
+        relations: ['role'],
+      });
 
       if (!user) {
         this.logger.warn(`User with id ${id} not found`);
