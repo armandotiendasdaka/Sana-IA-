@@ -9,14 +9,14 @@ export class Role {
 
     @OneToMany(() => User, (user) => user.role)
     users: User[]
-    
+
     @Column({ length: 100 })
     name: string;
 
-    @CreateDateColumn({ type: 'datetime' })
+    @CreateDateColumn({ type: 'timestamp' })
     createdAt: Date;
 
-    @UpdateDateColumn({ type: 'datetime', nullable: true })
+    @UpdateDateColumn({ type: 'timestamp', nullable: true })
     updatedAt: Date;
 
 }

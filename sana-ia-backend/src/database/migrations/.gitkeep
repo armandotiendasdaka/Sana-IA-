@@ -1,0 +1,2 @@
+// Placeholder for migrations
+// Run: npm run migration:generate -- src/database/migrations/InitialMigration

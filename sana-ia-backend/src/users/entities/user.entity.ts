@@ -9,7 +9,7 @@ export class User {
 
     @ManyToOne(() => Role, (role) => role.users)
     role: Role;
-    
+
     @Column({ unique: true })
     email: string;
 
@@ -31,9 +31,9 @@ export class User {
     @Column({ nullable: true })
     disclaimerAcceptedAt: Date;
 
-    @CreateDateColumn({ type: 'datetime' })
+    @CreateDateColumn({ type: 'timestamp' })
     createdAt: Date;
 
-    @UpdateDateColumn({ type: 'datetime', nullable: true })
+    @UpdateDateColumn({ type: 'timestamp', nullable: true })
     updatedAt: Date;
 }
