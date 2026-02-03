@@ -1,5 +1,6 @@
 import { Role } from "src/roles/entities/role.entity";
-import { Column, CreateDateColumn, Entity, ManyToOne, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
+import { RefreshToken } from "src/auth/entities/refresh-token.entity";
+import { Column, CreateDateColumn, Entity, ManyToOne, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
 
 @Entity()
 export class User {
@@ -16,7 +17,7 @@ export class User {
     @Column({ length: 100 })
     name: string;
 
-    @Column({ length: 50 })
+    @Column({ length: 255 })
     password: string;
 
     @Column()
@@ -36,4 +37,7 @@ export class User {
 
     @UpdateDateColumn({ type: 'timestamp', nullable: true })
     updatedAt: Date;
+
+    @OneToMany(() => RefreshToken, (refreshToken) => refreshToken.user)
+    refreshTokens: RefreshToken[];
 }

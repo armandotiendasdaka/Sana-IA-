@@ -1,30 +1,41 @@
-import dataSource from '../data-source';
-import { seedRoles } from './role.seed';
+import { DataSource } from 'typeorm';
+import { User } from '../../users/entities/user.entity';
+import { Role } from '../../roles/entities/role.entity';
+import * as dotenv from 'dotenv';
+import { RoleSeeder } from './role/role.seeder';
+import { UserSeeder } from './user/user.seeder';
+
+dotenv.config();
+
+const dataSource = new DataSource({
+    type: 'postgres',
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    username: process.env.DB_USERNAME || 'postgres',
+    password: process.env.DB_PASSWORD || 'postgres',
+    database: process.env.DB_NAME || 'sana_db',
+    entities: [User, Role],
+    synchronize: false,
+});
 
 async function runSeeds() {
     try {
-        console.log('🌱 Starting database seeding...\n');
-
-        // Initialize the data source
         await dataSource.initialize();
-        console.log('✓ Database connection established\n');
+        console.log('Database connected for seeding');
 
-        // Run seeders
-        console.log('📦 Seeding Roles...');
-        await seedRoles(dataSource);
-        console.log('');
+        // Run Role Seeder
+        const roleSeeder = new RoleSeeder(dataSource);
+        await roleSeeder.run();
 
-        // Add more seeders here as needed
-        // await seedUsers(dataSource);
-        // await seedSpecialists(dataSource);
+        // Run User Seeder
+        const userSeeder = new UserSeeder(dataSource);
+        await userSeeder.run();
 
-        console.log('✅ Database seeding completed successfully!');
+        console.log('Seeding completed successfully');
     } catch (error) {
-        console.error('❌ Error during seeding:', error);
-        process.exit(1);
+        console.error('Error during seeding:', error);
     } finally {
         await dataSource.destroy();
-        console.log('🔌 Database connection closed');
     }
 }
 

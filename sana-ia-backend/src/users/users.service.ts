@@ -5,6 +5,7 @@ import { User } from './entities/user.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Role } from 'src/roles/entities/role.entity';
+import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
@@ -36,8 +37,11 @@ export class UsersService {
         throw new NotFoundException('Role not found');
       }
 
+      const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
+
       const userInstance = this.userRepository.create({
         ...createUserDto,
+        password: hashedPassword,
         role: role
       })
 
@@ -58,6 +62,18 @@ export class UsersService {
 
       this.logger.error('Error fetching users', error.stack);
       throw new InternalServerErrorException('Error fetching users');
+    }
+  }
+
+  async findByEmail(email: string): Promise<User | null> {
+    try {
+      return await this.userRepository.findOne({
+        where: { email },
+        relations: ['role'],
+      });
+    } catch (error) {
+      this.logger.error(`Error finding user by email ${email}`, error.stack);
+      throw new InternalServerErrorException('Error finding user');
     }
   }
 
@@ -92,12 +108,16 @@ export class UsersService {
         throw new NotFoundException('User not found');
       }
 
-      if (updateUserDto.email && updateUserDto.email !== user.email) {
-        const existingUser = await this.userRepository.findOneBy({ email: updateUserDto.email });
+      if (updateUserDto.email) {
+        const { email } = updateUserDto;
 
-        if (existingUser && existingUser.id !== id) {
-          this.logger.warn(`Email ${updateUserDto.email} already in use`);
-          throw new BadRequestException('Email already in use');
+        if (email !== user.email) {
+          const existingUser = await this.userRepository.findOneBy({ email });
+
+          if (existingUser && existingUser.id !== id) {
+            this.logger.warn(`Email ${email} already in use`);
+            throw new BadRequestException('Email already in use');
+          }
         }
       }
 
