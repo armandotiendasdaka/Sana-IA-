@@ -1,5 +1,5 @@
-import { Role } from "src/roles/entities/role.entity";
-import { RefreshToken } from "src/auth/entities/refresh-token.entity";
+import { Role } from "../../roles/entities/role.entity";
+import { RefreshToken } from "../../auth/entities/refresh-token.entity";
 import { Column, CreateDateColumn, Entity, ManyToOne, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
 
 @Entity()
