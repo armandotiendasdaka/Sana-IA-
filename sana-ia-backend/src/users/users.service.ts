@@ -25,7 +25,7 @@ export class UsersService {
 
       const user = await this.userRepository.findBy({ email: createUserDto.email });
 
-      if (!user) {
+      if (user) {
         this.logger.warn(`Email ${createUserDto.email} already in use`);
         throw new BadRequestException('Email already in use');
       }
@@ -49,7 +49,7 @@ export class UsersService {
 
     } catch (error) {
       this.logger.error('Error creating user', error.stack);
-      return new InternalServerErrorException('Error creating user');
+      throw new InternalServerErrorException('Error creating user');
     }
   }
 
